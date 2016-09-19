@@ -1,0 +1,134 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+my $verbose = 0;
+my $dry_run = 0;
+
+use Getopt::Long;
+Getopt::Long::Configure("bundling", "gnu_compat");
+Getopt::Long::GetOptions("v|verbose+" => \$verbose,
+                         "n|dry-run" => \$dry_run,
+                         "h|help" => sub { usage(); exit(0); })
+  or die("Type '$0 --help' for help.\n");
+
+sub usage { print(<<"END"); }
+usage:
+  $0 [OPTION ...] DIR DIR [...]
+options:
+  -h, --help
+  -v, --verbose
+END
+
+select(STDERR); $| = 1; select(STDOUT);
+
+my $dedupe = My::DedupeSnapshots->new();
+$dedupe->{verbose} = $verbose;
+$dedupe->{dry_run} = $dry_run;
+$dedupe->run(@ARGV);
+
+package My::DedupeSnapshots;
+use warnings;
+use strict;
+
+use File::Find;
+use Digest::MD5;
+use File::Spec;
+
+sub new {
+    my ($class) = @_;
+    my $self = bless({}, $class);
+    return $self;
+}
+
+sub run {
+    my ($self, @dir) = @_;
+    $self->{md5_file} = {};
+    $self->{md5_dev_ino} = {};
+    foreach my $dir (@dir) {
+        $self->find_files($dir);
+    }
+    $self->deduplicate();
+}
+
+sub find_files {
+    my ($self, $dir) = @_;
+    my @file;
+    my $wanted = sub {
+        my ($dev,$ino,$mode,$nlink,$uid,$gid);
+        (($dev,$ino,$mode,$nlink,$uid,$gid) = lstat($_)) &&
+          -f _ && push(@file, { dev => $dev, ino => $ino, name => $File::Find::name });
+    };
+    if ($self->{verbose}) {
+        print STDERR ("Finding in $dir ... ");
+    }
+    find({ wanted => $wanted }, $dir);
+    if ($self->{verbose}) {
+        print STDERR ("Done.\n");
+    }
+    foreach my $file (@file) {
+        my $dev = $file->{dev};
+        my $ino = $file->{ino};
+        my $name = $file->{name};
+        $self->check_file($dir, $dev, $ino, $name);
+    }
+}
+
+sub check_file {
+    my ($self, $dir, $dev, $ino, $name) = @_;
+    my $md5 = $self->get_file_md5sum($dir, $dev, $ino, $name);
+    $self->register_file_md5($dir, $name, $md5);
+}
+
+sub get_file_md5sum {
+    my ($self, $dir, $dev, $ino, $name) = @_;
+    return $self->{md5_dev_ino}->{$dev, $ino} if exists $self->{md5_dev_ino}->{$dev, $ino};
+    my $fh;
+    if (!open($fh, "<", $name)) {
+        warn("Cannot open $name: $!\n");
+        return;
+    }
+    binmode($fh);
+    my $ctx = Digest::MD5->new();
+    if ($self->{verbose}) {
+        print STDERR ("Reading $name ... ");
+    }
+    $ctx->addfile($fh);
+    if ($self->{verbose}) {
+        print STDERR ("Done.\n");
+    }
+    close($fh);
+    my $md5 = $ctx->hexdigest();
+    $self->{md5_dev_ino}->{$dev, $ino} = $md5;
+    return $md5;
+}
+
+sub register_file_md5 {
+    my ($self, $dir, $name, $md5) = @_;
+    my $relpath = File::Spec->abs2rel($name, $dir);
+    my $key = $relpath . $; . $md5;
+    push(@{$self->{md5_file}->{$key}}, $dir)
+      unless grep { $_ eq $dir } @{$self->{md5_file}->{$key}};
+}
+
+sub deduplicate {
+    my ($self) = @_;
+    foreach my $key (keys(%{$self->{md5_file}})) {
+        my ($relpath, $md5) = split($;, $key);
+        my @dirs = @{$self->{md5_file}->{$key}};
+        if (scalar(@dirs) > 1) {
+            my ($dir1, @dir2) = @dirs;
+            foreach my $dir2 (@dir2) {
+                warn("unlink $dir2/$relpath\n")
+                  if $self->{verbose} || $self->{dry_run};
+                unlink("$dir2/$relpath")
+                  if !$self->{dry_run};
+                warn("link $dir1/$relpath $dir2/$relpath\n")
+                  if $self->{verbose} || $self->{dry_run};
+                link("$dir1/$relpath", "$dir2/$relpath")
+                  if !$self->{dry_run};
+            }
+        }
+    }
+}
+
