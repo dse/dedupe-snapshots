@@ -57,7 +57,9 @@ sub find_files {
     my $wanted = sub {
         my ($dev,$ino,$mode,$nlink,$uid,$gid);
         (($dev,$ino,$mode,$nlink,$uid,$gid) = lstat($_)) &&
-          -f _ && push(@file, { dev => $dev, ino => $ino, name => $File::Find::name });
+          -f _ && push(@file, { dev => $dev,
+                                ino => $ino,
+                                name => $File::Find::name });
     };
     if ($self->{verbose}) {
         print STDERR ("Finding in $dir ... ");
@@ -82,7 +84,8 @@ sub check_file {
 
 sub get_file_md5sum {
     my ($self, $dir, $dev, $ino, $name) = @_;
-    return $self->{md5_dev_ino}->{$dev, $ino} if exists $self->{md5_dev_ino}->{$dev, $ino};
+    return $self->{md5_dev_ino}->{$dev, $ino}
+      if exists $self->{md5_dev_ino}->{$dev, $ino};
     my $fh;
     if (!open($fh, "<", $name)) {
         warn("Cannot open $name: $!\n");
