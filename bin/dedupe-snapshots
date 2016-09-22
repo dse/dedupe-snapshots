@@ -43,6 +43,9 @@ sub new {
 
 sub run {
     my ($self, @dir) = @_;
+    if (scalar(@dir) < 2) {
+        die("You need to specify at least two directories.");
+    }
     $self->{md5_file} = {};
     $self->{md5_dev_ino} = {};
     foreach my $dir (@dir) {
